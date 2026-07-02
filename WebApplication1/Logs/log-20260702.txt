@@ -1,0 +1,20 @@
+2026-07-02 15:25:05.293 +03:00 [INF] Now listening on: https://localhost:7204
+2026-07-02 15:25:05.422 +03:00 [INF] Now listening on: http://localhost:5255
+2026-07-02 15:25:05.712 +03:00 [INF] Application started. Press Ctrl+C to shut down.
+2026-07-02 15:25:05.719 +03:00 [INF] Hosting environment: Development
+2026-07-02 15:25:05.749 +03:00 [INF] Content root path: C:\Users\Hp\source\repos\WebApplication1\WebApplication1
+2026-07-02 15:25:06.598 +03:00 [INF] Request starting HTTP/2 GET https://localhost:7204/swagger/index.html - null null
+2026-07-02 15:25:07.612 +03:00 [INF] Request starting HTTP/2 GET https://localhost:7204/_vs/browserLink - null null
+2026-07-02 15:25:07.613 +03:00 [INF] Request starting HTTP/2 GET https://localhost:7204/_framework/aspnetcore-browser-refresh.js - null null
+2026-07-02 15:25:07.627 +03:00 [INF] Request finished HTTP/2 GET https://localhost:7204/swagger/index.html - 200 null text/html;charset=utf-8 1104.4796ms
+2026-07-02 15:25:07.686 +03:00 [INF] Request finished HTTP/2 GET https://localhost:7204/_framework/aspnetcore-browser-refresh.js - 200 16509 application/javascript; charset=utf-8 73.5155ms
+2026-07-02 15:25:07.816 +03:00 [INF] Request finished HTTP/2 GET https://localhost:7204/_vs/browserLink - 200 null text/javascript; charset=UTF-8 204.5488ms
+2026-07-02 15:25:07.903 +03:00 [INF] Request starting HTTP/2 GET https://localhost:7204/swagger/v1/swagger.json - null null
+2026-07-02 15:25:07.968 +03:00 [INF] Request finished HTTP/2 GET https://localhost:7204/swagger/v1/swagger.json - 200 null application/json;charset=utf-8 65.9498ms
+2026-07-02 15:25:10.798 +03:00 [INF] Request starting HTTP/2 GET https://localhost:7204/api/Game - null null
+2026-07-02 15:25:10.836 +03:00 [INF] Executing endpoint 'GameStoreAPI.Controllers.GameController.GetAll (GameStoreAPI)'
+2026-07-02 15:25:11.000 +03:00 [INF] Route matched with {action = "GetAll", controller = "Game"}. Executing controller action with signature Microsoft.AspNetCore.Mvc.IActionResult GetAll() on controller GameStoreAPI.Controllers.GameController (GameStoreAPI).
+2026-07-02 15:25:11.068 +03:00 [INF] Executing OkObjectResult, writing value of type 'System.Collections.Generic.List`1[[GameStoreAPI.GameItem, GameStoreAPI, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]'.
+2026-07-02 15:25:11.137 +03:00 [INF] Executed action GameStoreAPI.Controllers.GameController.GetAll (GameStoreAPI) in 86.6411ms
+2026-07-02 15:25:11.146 +03:00 [INF] Executed endpoint 'GameStoreAPI.Controllers.GameController.GetAll (GameStoreAPI)'
+2026-07-02 15:25:11.171 +03:00 [INF] Request finished HTTP/2 GET https://localhost:7204/api/Game - 200 null application/json; charset=utf-8 372.961ms
