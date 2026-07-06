@@ -1,6 +1,9 @@
 using Microsoft.OpenApi.Models;
 using Serilog;
 using System.IO; // Klasör oluþturma komutu için bunu ekledik
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -14,6 +17,29 @@ if (!Directory.Exists(logDirectory))
 builder.Host.UseSerilog((context, configuration) =>
     configuration.WriteTo.Console()
                  .WriteTo.File("Logs/log-.txt", rollingInterval: RollingInterval.Day)); builder.Services.AddControllers();
+builder.Services.AddControllers();
+// JWT Kimlik Doðrulama Servisini Projeye Tanýtýyoruz
+var jwtSettings = builder.Configuration.GetSection("Jwt");
+var key = Encoding.UTF8.GetBytes(jwtSettings["Key"]);
+
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(options =>
+{
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidateLifetime = true,
+        ValidateIssuerSigningKey = true,
+        ValidIssuer = jwtSettings["Issuer"],
+        ValidAudience = jwtSettings["Audience"],
+        IssuerSigningKey = new SymmetricSecurityKey(key)
+    };
+});
 builder.Services.AddEndpointsApiExplorer();
 
 // Swagger Kilit Konfigürasyonu
