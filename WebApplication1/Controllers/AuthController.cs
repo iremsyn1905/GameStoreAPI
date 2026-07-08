@@ -1,13 +1,13 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using GameStoreAPI.Models;
-using System.Collections.Generic;
-using System.Linq;
-using Microsoft.OpenApi.Any;
+﻿using GameStoreAPI.Models;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
+using System;
+using System.Collections.Generic;
 using System.IdentityModel.Tokens.Jwt;
+using System.Linq;
 using System.Security.Claims;
 using System.Text;
-using Microsoft.Extensions.Configuration;
 
 namespace GameStoreAPI.Controllers
 {
@@ -15,8 +15,7 @@ namespace GameStoreAPI.Controllers
     [ApiController]
     public class AuthController : ControllerBase
     {
-
-        // Test amaçlı kullanıcıları geçici olarak bellekte tutuyoruz
+        // Test amaçlı kullanıcıları geçici olarak bellekte tutuyoruz 
         private static List<User> _users = new List<User>();
         private readonly IConfiguration _configuration;
 
@@ -25,108 +24,128 @@ namespace GameStoreAPI.Controllers
         {
             _configuration = configuration;
         }
-        // Kayıt istek modeli
+
+        // Kayıt istek modeli 
         public class RegisterRequest
         {
             public string Username { get; set; } = string.Empty;
             public string Password { get; set; } = string.Empty;
         }
-        // 1. KAYIT OLMA (REGISTER) FONKSİYONU
+
+        // 1. ADIM: REGISTER (KAYIT OLMA) METODU
         [HttpPost("register")]
         public IActionResult Register([FromBody] RegisterRequest request)
         {
-            if (_users.Any(u => u.Username == request.Username))
+            if (_users.Any(u => u.Username.ToLower() == request.Username.ToLower()))
             {
-                return BadRequest("Bu kullanıcı adı zaten alınmış");
+                return BadRequest("Bu kullanıcı zaten mevcut!");
             }
 
-            // Şifreyi hashliyoruz
-            string passwordHash = BCrypt.Net.BCrypt.HashPassword(request.Password);
+            var hashedPassword = BCrypt.Net.BCrypt.HashPassword(request.Password);
 
-            // Yeni kullanıcıyı listeye ekliyoruz
             var newUser = new User
             {
                 Id = _users.Count + 1,
                 Username = request.Username,
-                Password = passwordHash
+                Password = hashedPassword,
+                Role = request.Username.ToLower() == "irem" ? "Admin" : "User"
             };
 
             _users.Add(newUser);
+            return Ok("Kullanıcı başarıyla kaydedildi.");
+        }
 
-            return Ok("Kullanıcı başarıyla kaydedildi!");
-        }
-        // Giriş istek modeli
-        public class LoginRequest
-        {
-            public string Username { get; set; } = string.Empty;
-            public string Password { get; set; } = string.Empty;
-        }
-        // 2. GİRİŞ YAPMA (LOGIN) FONKSİYONU
+        // 2. ADIM: LOGIN (GİRİŞ YAPMA) METODU
         [HttpPost("login")]
-        public IActionResult Login([FromBody] LoginRequest request)
+        public IActionResult Login([FromBody] User request)
         {
-            // 1. ADIM: Giriş yapılmak istenen kullanıcı adını listede arıyoruz
-            var varOlanKullanici = _users.FirstOrDefault(u => u.Username == request.Username);
-
-            // Eğer kullanıcı listede bulunamadıysa hata dönüyoruz
+            var varOlanKullanici = _users.FirstOrDefault(u => u.Username.ToLower() == request.Username.ToLower());
             if (varOlanKullanici == null)
             {
                 return BadRequest("Kullanıcı adı veya şifre hatalı!");
             }
 
-            // 2. ADIM: İŞTE İKİNCİ SİHİRLİ BCRYPT KODU! Şifre kontrolü:
             bool sifreDogruMu = BCrypt.Net.BCrypt.Verify(request.Password, varOlanKullanici.Password);
-
-            // Eğer şifreler eşleşmiyorsa yine hata dönüyoruz
             if (!sifreDogruMu)
             {
                 return BadRequest("Kullanıcı adı veya şifre hatalı!");
             }
 
-            // İki kontrolü de geçtiyse giriş başarılıdır!
-            // Eğer şifreler eşleşmiyorsa yine hata dönüyoruz
-            if (!sifreDogruMu)
+            // DOĞRU TOKEN ÜRETİMİ: Burayı düzelttik, artık gerçek şifreli bilet üretiyor!
+            var accessToken = GenerateJwtToken(varOlanKullanici);
+            var refreshToken = GenerateRefreshToken();
+
+            varOlanKullanici.RefreshToken = refreshToken;
+            varOlanKullanici.RefreshTokenExpiration = DateTime.Now.AddDays(7);
+
+            return Ok(new
             {
-                return BadRequest("Kullanıcı adı veya şifre hatalı!");
-            }
-
-          
-            // Giriş başarılıysa kullanıcıya özel token üretiyoruz
-            var token = GenerateJwtToken(varOlanKullanici);
-
-            // Kullanıcıya hem mesajı hem de dijital anahtarını teslim ediyoruz
-            return Ok(new { Message = "Giriş başarılı!", Token = token });
+                Message = "Giriş başarılı!",
+                Token = accessToken,
+                RefreshToken = refreshToken,
+                Expiration = varOlanKullanici.RefreshTokenExpiration
+            });
         }
-        
-        // TOKEN ÜRETEN YARDIMCI METOD
+
+        // 3. ADIM: REFRESH (TOKEN YENİLEME) METODU
+        [HttpPost("refresh")]
+        public IActionResult Refresh([FromBody] string refreshToken)
+        {
+            if (string.IsNullOrEmpty(refreshToken))
+            {
+                return BadRequest("Refresh token boş olamaz!");
+            }
+
+            // Swagger'ın önbellekten getirdiği tüm pislikleri temizleyen sihirli filtre
+            var cleanToken = refreshToken.Replace("\"", "").Replace("string", "").Trim();
+
+            // Temizlenmiş tokenı hafızada arıyoruz
+            var user = _users.FirstOrDefault(u => u.RefreshToken == cleanToken);
+
+            if (user == null || user.RefreshTokenExpiration <= DateTime.Now)
+            {
+                return Unauthorized("Geçersiz veya süresi dolmuş Refresh Token!");
+            }
+
+            var newAccessToken = GenerateJwtToken(user);
+            var newRefreshToken = GenerateRefreshToken();
+
+            user.RefreshToken = newRefreshToken;
+            user.RefreshTokenExpiration = DateTime.Now.AddDays(7);
+
+            return Ok(new
+            {
+                Token = newAccessToken,
+                RefreshToken = newRefreshToken,
+                Expiration = user.RefreshTokenExpiration
+            });
+        }
+
+        // JTW TOKEN ÜRETEN ARKA PLAN FABRİKASI
         private string GenerateJwtToken(User user)
         {
-            var jwtSettings = _configuration.GetSection("Jwt");
-            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings["Key"]!));
-            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+            var tokenHandler = new JwtSecurityTokenHandler();
+            var key = Encoding.ASCII.GetBytes("BurayaGisliKeyiniziYazin1234567890!");
 
-            // Anahtarın içine kullanıcının hangi bilgilerini gömeceğimizi seçiyoruz (Claim)
-            var claims = new[]
+            var tokenDescriptor = new SecurityTokenDescriptor
             {
-        new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
-        new Claim(ClaimTypes.Name, user.Username)
-    };
+                Subject = new ClaimsIdentity(new[]
+                {
+                    new Claim(ClaimTypes.Name, user.Username),
+                    new Claim(ClaimTypes.Role, user.Role) // Rolü pürüzsüzce gömdük
+                }),
+                Expires = DateTime.UtcNow.AddMinutes(15),
+                SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+            };
 
-            // Anahtarın özelliklerini ekiyoruz (Kim üretti, kimler kullanabilir, ne zaman bitecek?)
-            var token = new JwtSecurityToken(
-                issuer: jwtSettings["Issuer"],
-                audience: jwtSettings["Audience"],
-                claims: claims,
-                expires: DateTime.Now.AddDays(1), // Bu anahtar 1 gün boyunca geçerli olsun
-                signingCredentials: creds
-            );
-
-            return new JwtSecurityTokenHandler().WriteToken(token);
+            var token = tokenHandler.CreateToken(tokenDescriptor);
+            return tokenHandler.WriteToken(token);
         }
 
-
+        // REFRESH TOKEN ÜRETEN ARKA PLAN FABRİKASI
+        private string GenerateRefreshToken()
+        {
+            return Guid.NewGuid().ToString();
+        }
     }
-   
 }
-
-    

@@ -1,13 +1,40 @@
 using Microsoft.OpenApi.Models;
 using Serilog;
-using System.IO; // Klasör oluþturma komutu için bunu ekledik
+using System.IO;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// GEÇEN SEFERKÝ GÝBÝ KLASÖRÜ VE TXT DOSYASINI ZORLA OLUÞTURAN KOD
+// ==========================================
+// 1. JWT KIMLIK DOÐRULAMA SERVISI (TEK VE GÜNCEL)
+// ==========================================
+var key = Encoding.ASCII.GetBytes("BurayaGisliKeyiniziYazin1234567890!");
+
+builder.Services.AddAuthentication(x =>
+{
+    x.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    x.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(x =>
+{
+    x.RequireHttpsMetadata = false;
+    x.SaveToken = true;
+    x.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuerSigningKey = true,
+        IssuerSigningKey = new SymmetricSecurityKey(key),
+        ValidateIssuer = false,
+        ValidateAudience = false,
+        ValidateLifetime = true,
+        ClockSkew = TimeSpan.Zero
+    };
+});
+
+// ==========================================
+// 2. SERILOG LOGLAMA AYARLARI
+// ==========================================
 var logDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
 if (!Directory.Exists(logDirectory))
 {
@@ -16,33 +43,14 @@ if (!Directory.Exists(logDirectory))
 
 builder.Host.UseSerilog((context, configuration) =>
     configuration.WriteTo.Console()
-                 .WriteTo.File("Logs/log-.txt", rollingInterval: RollingInterval.Day)); builder.Services.AddControllers();
-builder.Services.AddControllers();
-// JWT Kimlik Doðrulama Servisini Projeye Tanýtýyoruz
-var jwtSettings = builder.Configuration.GetSection("Jwt");
-var key = Encoding.UTF8.GetBytes(jwtSettings["Key"]);
+                 .WriteTo.File("Logs/log-.txt", rollingInterval: RollingInterval.Day));
 
-builder.Services.AddAuthentication(options =>
-{
-    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
-})
-.AddJwtBearer(options =>
-{
-    options.TokenValidationParameters = new TokenValidationParameters
-    {
-        ValidateIssuer = true,
-        ValidateAudience = true,
-        ValidateLifetime = true,
-        ValidateIssuerSigningKey = true,
-        ValidIssuer = jwtSettings["Issuer"],
-        ValidAudience = jwtSettings["Audience"],
-        IssuerSigningKey = new SymmetricSecurityKey(key)
-    };
-});
+// ==========================================
+// 3. CONTROLLER VE SWAGGER AYARLARI
+// ==========================================
+builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
-// Swagger Kilit Konfigürasyonu
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "GameStoreAPI", Version = "v1" });
@@ -72,22 +80,25 @@ builder.Services.AddSwaggerGen(c =>
         }
     });
 });
-
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+    // ==========================================
+    // 4. MIDDLEWARE (ARA KATMAN) BORU HATTI
+    // ==========================================
+    if (app.Environment.IsDevelopment())
+    {
+        app.UseSwagger();
+        app.UseSwaggerUI();
+    }
 
-app.UseMiddleware<GameStoreAPI.Middlewares.ExceptionHandlingMiddleware>();
+    app.UseMiddleware<GameStoreAPI.Middlewares.ExceptionHandlingMiddleware>();
 
-app.UseHttpsRedirection();
+    app.UseHttpsRedirection();
 
-app.UseAuthentication();
-app.UseAuthorization();
+    // Doðru sýralamayla fedaileri kapýya diziyoruz
+    app.UseAuthentication();
+    app.UseAuthorization();
 
-app.MapControllers();
+    app.MapControllers();
 
-app.Run();
+    app.Run();

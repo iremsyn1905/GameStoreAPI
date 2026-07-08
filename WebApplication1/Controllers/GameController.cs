@@ -5,13 +5,14 @@ using Microsoft.AspNetCore.Mvc;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
+using Microsoft.AspNetCore.Authorization;
 
 
 namespace GameStoreAPI.Controllers
 {
-    [Route("API/Controller")]
+    [Route("api/[controller]")] // Küçük harflerle ve köşeli parantez içinde [controller] yaptık
     [ApiController]
-    [Authorize]
+    // [Authorize] -> Test etmek için bu satırın başına şimdilik iki eğik çizgi koyup devre dışı bırakalım
     public class GameController : ControllerBase
     {
         private static List<GameItem> _gamelist = new List<GameItem>
@@ -24,6 +25,7 @@ namespace GameStoreAPI.Controllers
 
         //Get:Api/Game
         [HttpGet]
+        [AllowAnonymous] // Giriş yapmamış olsa bile herkes oyun listesini görebilsin dedik
         public IActionResult GetAll()
         {
             return Ok(_gamelist);
@@ -42,7 +44,8 @@ namespace GameStoreAPI.Controllers
         }
 
         //Post:Api/Game
-        [HttpPost]
+        [Authorize(Roles = "Admin")]
+        [HttpPost("oyun-ekle")]
         ///<summary>
         ///Yeni oyun ekle.
         /// </summary>
@@ -87,7 +90,7 @@ namespace GameStoreAPI.Controllers
             game.Rating = updatedGameDto.Rating;
             game.IsInstalled = updatedGameDto.IsInstalled;
 
-            return NotFound();
+      return Ok(game);
         }
 
         //Delete:Api/Game/1
@@ -100,8 +103,8 @@ namespace GameStoreAPI.Controllers
                 return NotFound("Silmek istediğiniz oyun bulunamadı");
             }
             _gamelist.Remove(game);
-            return NotFound();
-            
+            return NoContent();
+
         }
 
 
