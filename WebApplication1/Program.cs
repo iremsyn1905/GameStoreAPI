@@ -93,7 +93,7 @@ var app = builder.Build();
 
     app.UseMiddleware<GameStoreAPI.Middlewares.ExceptionHandlingMiddleware>();
 
-    app.UseHttpsRedirection();
+   // app.UseHttpsRedirection();
 
     // Doðru sýralamayla fedaileri kapýya diziyoruz
     app.UseAuthentication();
