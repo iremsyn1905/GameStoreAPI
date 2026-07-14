@@ -3,40 +3,43 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
 using System;
-using System.Collections.Generic;
 using System.IdentityModel.Tokens.Jwt;
 using System.Linq;
 using System.Security.Claims;
 using System.Text;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using GameStoreAPI.Data; // Bizim veri tabanı köprümüz
 
 namespace GameStoreAPI.Controllers
 {
-    [Route("api/Controller")]
+    [Route("api/[controller]")]
     [ApiController]
     public class AuthController : ControllerBase
     {
-        // Test amaçlı kullanıcıları geçici olarak bellekte tutuyoruz 
-        private static List<User> _users = new List<User>();
+        private readonly AppDbContext _context;
         private readonly IConfiguration _configuration;
 
-        // Ayarları okuyabilmek için Constructor ekliyoruz
-        public AuthController(IConfiguration configuration)
+        // Listeyi sildik, yerine AppDbContext enjekte ettik
+        public AuthController(AppDbContext context, IConfiguration configuration)
         {
+            _context = context;
             _configuration = configuration;
         }
 
-        // Kayıt istek modeli 
         public class RegisterRequest
         {
             public string Username { get; set; } = string.Empty;
             public string Password { get; set; } = string.Empty;
         }
 
-        // 1. ADIM: REGISTER (KAYIT OLMA) METODU
+        // 1. ADIM: REGISTER (KAYIT OLMA)
         [HttpPost("register")]
-        public IActionResult Register([FromBody] RegisterRequest request)
+        public async Task<IActionResult> Register([FromBody] RegisterRequest request)
         {
-            if (_users.Any(u => u.Username.ToLower() == request.Username.ToLower()))
+            // SQL tablosunda bu kullanıcı adı var mı diye bakıyoruz
+            var userExists = await _context.Users.AnyAsync(u => u.Username.ToLower() == request.Username.ToLower());
+            if (userExists)
             {
                 return BadRequest("Bu kullanıcı zaten mevcut!");
             }
@@ -45,21 +48,23 @@ namespace GameStoreAPI.Controllers
 
             var newUser = new User
             {
-                Id = _users.Count + 1,
                 Username = request.Username,
                 Password = hashedPassword,
                 Role = request.Username.ToLower() == "irem" ? "Admin" : "User"
             };
 
-            _users.Add(newUser);
+            _context.Users.Add(newUser);
+            await _context.SaveChangesAsync(); // SQL'e kalıcı olarak kaydet!
+
             return Ok("Kullanıcı başarıyla kaydedildi.");
         }
 
-        // 2. ADIM: LOGIN (GİRİŞ YAPMA) METODU
+        // 2. ADIM: LOGIN (GİRİŞ YAPMA)
         [HttpPost("login")]
-        public IActionResult Login([FromBody] User request)
+        public async Task<IActionResult> Login([FromBody] User request)
         {
-            var varOlanKullanici = _users.FirstOrDefault(u => u.Username.ToLower() == request.Username.ToLower());
+            // Kullanıcıyı SQL'den çekiyoruz
+            var varOlanKullanici = await _context.Users.FirstOrDefaultAsync(u => u.Username.ToLower() == request.Username.ToLower());
             if (varOlanKullanici == null)
             {
                 return BadRequest("Kullanıcı adı veya şifre hatalı!");
@@ -71,12 +76,13 @@ namespace GameStoreAPI.Controllers
                 return BadRequest("Kullanıcı adı veya şifre hatalı!");
             }
 
-            // DOĞRU TOKEN ÜRETİMİ: Burayı düzelttik, artık gerçek şifreli bilet üretiyor!
             var accessToken = GenerateJwtToken(varOlanKullanici);
             var refreshToken = GenerateRefreshToken();
 
             varOlanKullanici.RefreshToken = refreshToken;
             varOlanKullanici.RefreshTokenExpiration = DateTime.Now.AddDays(7);
+
+            await _context.SaveChangesAsync(); // Refresh token bilgilerini SQL'de güncelle!
 
             return Ok(new
             {
@@ -87,20 +93,19 @@ namespace GameStoreAPI.Controllers
             });
         }
 
-        // 3. ADIM: REFRESH (TOKEN YENİLEME) METODU
+        // 3. ADIM: REFRESH (TOKEN YENİLEME)
         [HttpPost("refresh")]
-        public IActionResult Refresh([FromBody] string refreshToken)
+        public async Task<IActionResult> Refresh([FromBody] string refreshToken)
         {
             if (string.IsNullOrEmpty(refreshToken))
             {
                 return BadRequest("Refresh token boş olamaz!");
             }
 
-            // Swagger'ın önbellekten getirdiği tüm pislikleri temizleyen sihirli filtre
             var cleanToken = refreshToken.Replace("\"", "").Replace("string", "").Trim();
 
-            // Temizlenmiş tokenı hafızada arıyoruz
-            var user = _users.FirstOrDefault(u => u.RefreshToken == cleanToken);
+            // Temizlenen token değerini SQL Server tablosunda arıyoruz
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.RefreshToken == cleanToken);
 
             if (user == null || user.RefreshTokenExpiration <= DateTime.Now)
             {
@@ -113,6 +118,8 @@ namespace GameStoreAPI.Controllers
             user.RefreshToken = newRefreshToken;
             user.RefreshTokenExpiration = DateTime.Now.AddDays(7);
 
+            await _context.SaveChangesAsync(); // Yeni refresh token'ı SQL'e işle!
+
             return Ok(new
             {
                 Token = newAccessToken,
@@ -121,7 +128,6 @@ namespace GameStoreAPI.Controllers
             });
         }
 
-        // JTW TOKEN ÜRETEN ARKA PLAN FABRİKASI
         private string GenerateJwtToken(User user)
         {
             var tokenHandler = new JwtSecurityTokenHandler();
@@ -132,7 +138,7 @@ namespace GameStoreAPI.Controllers
                 Subject = new ClaimsIdentity(new[]
                 {
                     new Claim(ClaimTypes.Name, user.Username),
-                    new Claim(ClaimTypes.Role, user.Role) // Rolü pürüzsüzce gömdük
+                    new Claim(ClaimTypes.Role, user.Role)
                 }),
                 Expires = DateTime.UtcNow.AddMinutes(15),
                 SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
@@ -142,7 +148,6 @@ namespace GameStoreAPI.Controllers
             return tokenHandler.WriteToken(token);
         }
 
-        // REFRESH TOKEN ÜRETEN ARKA PLAN FABRİKASI
         private string GenerateRefreshToken()
         {
             return Guid.NewGuid().ToString();

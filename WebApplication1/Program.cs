@@ -4,8 +4,15 @@ using System.IO;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using Microsoft.EntityFrameworkCore;
+using GameStoreAPI.Data; // Bizim Data klasörümüzü görsün diye
 
 var builder = WebApplication.CreateBuilder(args);
+// ==========================================
+// VERÝ TABANI BAÐLANTI AYARI (EF CORE & SQL)
+// ==========================================
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 // ==========================================
 // 1. JWT KIMLIK DOÐRULAMA SERVISI (TEK VE GÜNCEL)
