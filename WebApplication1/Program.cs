@@ -1,21 +1,41 @@
-using Microsoft.OpenApi.Models;
+﻿using Microsoft.OpenApi.Models;
 using Serilog;
 using System.IO;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
-using GameStoreAPI.Data; // Bizim Data klas�r�m�z� g�rs�n diye
+using GameStoreAPI.Data; // Bizim Data klasörümüzü görsün diye
+using System.Threading.RateLimiting; // 🚀 YENİ: Rate Limiting için eklendi
+using Microsoft.AspNetCore.RateLimiting; // 🚀 YENİ: Rate Limiting için eklendi
 
 var builder = WebApplication.CreateBuilder(args);
+
 // ==========================================
-// VER� TABANI BA�LANTI AYARI (EF CORE & SQL)
+// VERİ TABANI BAĞLANTI AYARI (EF CORE & SQL)
 // ==========================================
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 // ==========================================
-// 1. JWT KIMLIK DO�RULAMA SERVISI (TEK VE G�NCEL)
+// 🚀 RATE LIMITING (İSTEK SINIRLAMA) AYARI
+// ==========================================
+builder.Services.AddRateLimiter(options =>
+{
+    // "FixedPolicy" adında bir kural tanımlıyoruz
+    options.AddFixedWindowLimiter(policyName: "FixedPolicy", fixedOptions =>
+    {
+        fixedOptions.PermitLimit = 2; // 30 saniyede en fazla 2 istek atabilsin
+        fixedOptions.Window = TimeSpan.FromSeconds(30); // 30 saniyelik pencere
+        fixedOptions.QueueLimit = 0;
+    });
+
+    // Sınırı aşan kullanıcılara 429 Too Many Requests hatası dönüyoruz
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+});
+
+// ==========================================
+// 1. JWT KIMLIK DOĞRULAMA SERVISI (TEK VE GÜNCEL)
 // ==========================================
 var key = Encoding.ASCII.GetBytes("BurayaGisliKeyiniziYazin1234567890!");
 
@@ -55,6 +75,12 @@ builder.Host.UseSerilog((context, configuration) =>
 // ==========================================
 // 3. CONTROLLER VE SWAGGER AYARLARI
 // ==========================================
+/// 🧠 YENİ: Ortak Redis Cache servisini projeye ekliyoruz (Varsayılan Redis portu 6379'dur)
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = "localhost:6379"; // Eğer bilgisayarında kuruluysa doğrudan bağlanır
+    options.InstanceName = "GameStore_";      // Redis içindeki verilerimizin başına gelecek takı
+});
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
@@ -65,7 +91,7 @@ builder.Services.AddSwaggerGen(c =>
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         In = ParameterLocation.Header,
-        Description = "L�tfen Bearer token de�erini giriniz (�rn: Bearer eyJhbGci...)",
+        Description = "Lütfen Bearer token değerini giriniz (Örn: Bearer eyJhbGci...)",
         Name = "Authorization",
         Type = SecuritySchemeType.ApiKey,
         BearerFormat = "JWT",
@@ -87,25 +113,30 @@ builder.Services.AddSwaggerGen(c =>
         }
     });
 });
+
 var app = builder.Build();
 
-    // ==========================================
-    // 4. MIDDLEWARE (ARA KATMAN) BORU HATTI
-    // ==========================================
-    if (app.Environment.IsDevelopment())
-    {
-        app.UseSwagger();
-        app.UseSwaggerUI();
-    }
+// ==========================================
+// 4. MIDDLEWARE (ARA KATMAN) BORU HATTI
+// ==========================================
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
 
-    app.UseMiddleware<GameStoreAPI.Middlewares.ExceptionHandlingMiddleware>();
+app.UseMiddleware<GameStoreAPI.Middlewares.ExceptionHandlingMiddleware>();
 
-   // app.UseHttpsRedirection();
+// app.UseHttpsRedirection();
 
-    // Do�ru s�ralamayla fedaileri kap�ya diziyoruz
-    app.UseAuthentication();
-    app.UseAuthorization();
+// 🚀 YENİ: Rate Limiter middleware'ini fedailerin arasına ekliyoruz.
+// Kimlik kontrolünden (Authentication) hemen önce çalışması en iyisidir.
+app.UseRateLimiter();
 
-    app.MapControllers();
+// Doğru sıralamayla fedaileri kapıya diziyoruz
+app.UseAuthentication();
+app.UseAuthorization();
 
-    app.Run();
+app.MapControllers();
+
+app.Run();
