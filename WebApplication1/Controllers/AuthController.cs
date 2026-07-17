@@ -131,7 +131,9 @@ namespace GameStoreAPI.Controllers
         private string GenerateJwtToken(User user)
         {
             var tokenHandler = new JwtSecurityTokenHandler();
-            var key = Encoding.ASCII.GetBytes("BurayaGisliKeyiniziYazin1234567890!");
+
+            // 🎯 Burayı UTF8 yaptık ki imza şifrelemesi esnasında karakter/bit kaybı olmasın
+            var key = Encoding.UTF8.GetBytes("BurayaGisliKeyiniziYazin1234567890!");
 
             var tokenDescriptor = new SecurityTokenDescriptor
             {

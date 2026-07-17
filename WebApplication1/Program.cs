@@ -37,7 +37,8 @@ builder.Services.AddRateLimiter(options =>
 // ==========================================
 // 1. JWT KIMLIK DOĞRULAMA SERVISI (TEK VE GÜNCEL)
 // ==========================================
-var key = Encoding.ASCII.GetBytes("BurayaGisliKeyiniziYazin1234567890!");
+// 🎯 Burası UTF8 yapıldı (AuthController ile tam senkronize olması için)
+var key = Encoding.UTF8.GetBytes("BurayaGisliKeyiniziYazin1234567890!");
 
 builder.Services.AddAuthentication(x =>
 {
@@ -57,6 +58,51 @@ builder.Services.AddAuthentication(x =>
         ValidateLifetime = true,
         ClockSkew = TimeSpan.Zero
     };
+
+    // 🔒 İŞTE ÖZELLEŞTİRİLMİŞ HATA OLAYLARI (401 ve 403 Protokolü)
+    x.Events = new JwtBearerEvents
+    {
+        // 1. GİRİŞ YAPILMADIĞINDA TETİKLENEN HATA (401 Unauthorized)
+        OnChallenge = async context =>
+        {
+            // .NET'in varsayılan boş 401 fırlatma davranışını engelliyoruz
+            context.HandleResponse();
+
+            // Yanıt tipimizi kurumsal JSON yapıyoruz
+            context.Response.ContentType = "application/json";
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+
+            // Ön yüzün doğrudan yakalayıp ekrana basabileceği şık hata paketi
+            var response = new
+            {
+                statusCode = 401,
+                message = "Bu işlemi gerçekleştirmek için yetkiniz bulunmamaktadır. Lütfen sisteme giriş yapınız.",
+                detailed = "JWT Bearer Token bulunamadı veya süresi dolmuş."
+            };
+
+            var jsonResponse = System.Text.Json.JsonSerializer.Serialize(response);
+            await context.Response.WriteAsync(jsonResponse);
+        },
+
+        // 2. YETKİSİZ ROLLE GİRİŞ YAPILDIĞINDA TETİKLENEN HATA (403 Forbidden)
+        OnForbidden = async context =>
+        {
+            // Yanıt tipimizi kurumsal JSON yapıyoruz
+            context.Response.ContentType = "application/json";
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+
+            // Ön yüzün doğrudan yakalayıp ekrana basabileceği şık hata paketi
+            var response = new
+            {
+                statusCode = 403,
+                message = "Bu işlemi gerçekleştirmek için yetkiniz yetersizdir. Bu işlem sadece 'Admin' rolüne sahip kullanıcılar tarafından yapılabilir.",
+                detailed = "Kullanıcı rolü bu endpoint için gerekli olan 'Admin' rolünü karşılamıyor."
+            };
+
+            var jsonResponse = System.Text.Json.JsonSerializer.Serialize(response);
+            await context.Response.WriteAsync(jsonResponse);
+        }
+    };
 });
 
 // ==========================================
@@ -75,12 +121,8 @@ builder.Host.UseSerilog((context, configuration) =>
 // ==========================================
 // 3. CONTROLLER VE SWAGGER AYARLARI
 // ==========================================
-/// 🧠 YENİ: Ortak Redis Cache servisini projeye ekliyoruz (Varsayılan Redis portu 6379'dur)
-builder.Services.AddStackExchangeRedisCache(options =>
-{
-    options.Configuration = "localhost:6379"; // Eğer bilgisayarında kuruluysa doğrudan bağlanır
-    options.InstanceName = "GameStore_";      // Redis içindeki verilerimizin başına gelecek takı
-});
+// 🧠 Sunum Modu: Bilgisayara Redis kurmadan, kodları değiştirmeden RAM üzerinden Cache simülasyonu yapar!
+builder.Services.AddDistributedMemoryCache();
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 

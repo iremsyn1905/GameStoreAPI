@@ -9,8 +9,9 @@ using Microsoft.EntityFrameworkCore;
 using GameStoreAPI.Data; // Bizim AppDbContext burada yaşıyor
 using GameStoreAPI.Models;
 using Microsoft.AspNetCore.RateLimiting;
-using Microsoft.Extensions.Caching.Distributed; // 🚀 YENİ: Distributed Cache için kütüphane
-using System.Text.Json; // 🚀 YENİ: Verileri JSON formatına çevirmek için
+using Microsoft.Extensions.Caching.Distributed; // Distributed Cache için kütüphane
+using System.Text.Json; // Verileri JSON formatına çevirmek için
+using System;
 
 namespace GameStoreAPI.Controllers
 {
@@ -20,7 +21,7 @@ namespace GameStoreAPI.Controllers
     public class GameController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly IDistributedCache _distributedCache; // 🚀 GÜNCELLENDİ: IMemoryCache yerine IDistributedCache kullanıyoruz
+        private readonly IDistributedCache _distributedCache; // IMemoryCache yerine IDistributedCache kullanıyoruz
 
         // Constructor'a yeni servisi enjekte ediyoruz
         public GameController(AppDbContext context, IDistributedCache distributedCache)
@@ -29,25 +30,89 @@ namespace GameStoreAPI.Controllers
             _distributedCache = distributedCache;
         }
 
+        // 🤖 SIFIR MALİYETLİ YAPAY ZEKA METODU (api/Game/ask-ai)
+        // Bu metot bakiye istemez, OpenAI mantığını tamamen lokalde simüle eder!
+        [HttpGet("ask-ai")]
+        [AllowAnonymous] // Yapay zeka asistanıyla herkes konuşabilsin diye açık bıraktık
+        public async Task<IActionResult> AskAI([FromQuery] string userMessage)
+        {
+            if (string.IsNullOrWhiteSpace(userMessage))
+            {
+                return BadRequest("Mesaj boş olamaz.");
+            }
+
+            string messageLower = userMessage.ToLower();
+            string aiResponse = "";
+
+            // 1. PROMPT ENGINEERING (Sistem Rolü) SİMÜLASYONU
+            if (messageLower.Contains("makarna") || messageLower.Contains("yemek") || messageLower.Contains("hava durumu"))
+            {
+                aiResponse = "Ben GameStoreAPI asistanıyım. Sistem rolüm gereği sadece oyunlar ve yazılımla ilgili soruları cevaplandırabilirim. Size başka bir oyun konusunda yardımcı olabilir miyim? 🎮";
+            }
+            else if (messageLower.Contains("selam") || messageLower.Contains("merhaba") || messageLower.Contains("naber"))
+            {
+                aiResponse = "Harika bir gün İrem! 🌟 Ben GameStoreAPI yapay zeka asistanıyım. Sana oyun önerileri sunabilir, dünkü Redis cache mimarimiz hakkında bilgi verebilirim. Ne hakkında konuşalım?";
+            }
+            else if (messageLower.Contains("gta") || messageLower.Contains("grand theft auto"))
+            {
+                aiResponse = "Ooo, GTA V harika bir seçim! 🚗 PC platformunda oynaması inanılmaz keyiflidir. Özellikle soygun görevlerinde takım arkadaşlarınla harika bir deneyim yaşayabilirsin. Başka bir oyun önerisi ister misin?";
+            }
+            else if (messageLower.Contains("öneri") || messageLower.Contains("oyun öner"))
+            {
+                aiResponse = "Sana hemen 3 harika oyun önereyim:\n1. Witcher 3 (Harika bir RPG)\n2. Red Dead Redemption 2 (Muhteşem bir açık dünya)\n3. Cyberpunk 2077 (Geleceğin dünyası)\nHangisi ilgini çekti?";
+            }
+            else if (messageLower.Contains("redis") || messageLower.Contains("hız"))
+            {
+                aiResponse = "Dün kurduğumuz Redis cache yapısı sayesinde oyun listeleme isteğin artık SQL veri tabanına gitmeden mikro saniyeler içinde (ışık hızında ⚡) yanıtlanıyor!";
+            }
+            else
+            {
+                aiResponse = $"Gönderdiğin '{userMessage}' mesajını oyun kütüphanemde inceledim! Harika bir konu. Sana bu konuda destek olmaktan mutluluk duyarım. 🎮";
+            }
+
+            // 2. TOKEN LİMİTİ SİMÜLASYONU
+            int maxAllowedWords = 40; // Maksimum 40 kelime sınırı
+            var words = aiResponse.Split(' ');
+            if (words.Length > maxAllowedWords)
+            {
+                aiResponse = string.Join(" ", words.Take(maxAllowedWords)) + "... [Cevap Token Limitine Ulaştığı İçin Sınırlandırıldı]";
+            }
+
+            // 3. YANIT FORMATLAMA VE TOKEN HESAPLAMA
+            int promptTokens = userMessage.Length / 4;
+            int completionTokens = aiResponse.Length / 4;
+            int totalTokens = promptTokens + completionTokens;
+
+            // Gerçekçilik katmak için 500ms küçük bir gecikme (Yapay zeka düşünüyor gibi)
+            await Task.Delay(500);
+
+            // OpenAI API çıktı formatıyla birebir aynı JSON yapısı
+            return Ok(new
+            {
+                author = "AI Assistant (Simulated)",
+                response = aiResponse,
+                promptTokens = promptTokens,
+                completionTokens = completionTokens,
+                totalTokens = totalTokens
+            });
+        }
+
         // 1. GET: api/Game (Redis Entegrasyonlu - Ortak Dağıtık Cache ⚡🌐)
         [HttpGet]
-        [AllowAnonymous]
+        [Authorize] // 🔒 Sadece Login olmuş kayıtlı kullanıcılar (User veya Admin) oyunları listeleyebilir!
         public async Task<IActionResult> GetAll([FromQuery] GameQueryParameters queryParams)
         {
             string cacheKey = $"games_{queryParams.SearchName}_{queryParams.Genre}_{queryParams.SortBy}_{queryParams.IsDescending}_{queryParams.PageNumber}_{queryParams.PageSize}";
 
-            // 1. Adım: Redis'ten bu anahtara ait veriyi (yazı olarak) çekmeye çalışıyoruz
             string cachedDataJson = await _distributedCache.GetStringAsync(cacheKey);
             PagedResult<GameItem> result;
 
             if (!string.IsNullOrEmpty(cachedDataJson))
             {
-                // 2. Adım: Eğer veri Redis'te VARSA, JSON yazısını tekrar C# objesine dönüştürüyoruz (Işık hızı! ⚡)
                 result = JsonSerializer.Deserialize<PagedResult<GameItem>>(cachedDataJson);
             }
             else
             {
-                // 3. Adım: Eğer veri Redis'te YOKSA, SQL veri tabanına gidip sorguluyoruz
                 var query = _context.Games.AsQueryable();
 
                 if (!string.IsNullOrWhiteSpace(queryParams.SearchName))
@@ -95,22 +160,21 @@ namespace GameStoreAPI.Controllers
                     Data = pagedData
                 };
 
-                // 4. Adım: SQL'den aldığımız bu veriyi JSON yazısına dönüştürüp Redis'e yazıyoruz
                 string jsonToCache = JsonSerializer.Serialize(result);
 
                 var cacheOptions = new DistributedCacheEntryOptions()
-                    .SetAbsoluteExpiration(TimeSpan.FromMinutes(2)) // 2 dakika boyunca Redis'te saklansın
-                    .SetSlidingExpiration(TimeSpan.FromSeconds(45)); // 45 saniye istek gelmezse silinsin
+                    .SetAbsoluteExpiration(TimeSpan.FromMinutes(2))
+                    .SetSlidingExpiration(TimeSpan.FromSeconds(45));
 
                 await _distributedCache.SetStringAsync(cacheKey, jsonToCache, cacheOptions);
             }
 
-            // 5. Adım: Kullanıcıya sonucu dönüyoruz
             return Ok(result);
         }
 
         // 2. GET: api/Game/1
         [HttpGet("{id}")]
+        [Authorize] // 🔒 Sadece Login olmuş kullanıcılar ID ile oyun detayına bakabilir!
         public async Task<IActionResult> GetById(int id)
         {
             var game = await _context.Games.FirstOrDefaultAsync(g => g.Id == id);
@@ -122,7 +186,7 @@ namespace GameStoreAPI.Controllers
         }
 
         // 3. POST: api/Game/oyun-ekle (Sadece Admin ekleyebilir)
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin")] // 🛡️ Sadece Admin yetkisi olan girişler (İrem) oyun ekleyebilir!
         [HttpPost("oyun-ekle")]
         [ProducesResponseType(StatusCodes.Status201Created)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -142,14 +206,15 @@ namespace GameStoreAPI.Controllers
                 IsInstalled = newGameDto.IsInstalled
             };
 
-            _context.Games.Add(game); // Veriyi sıraya ekle
-            await _context.SaveChangesAsync(); // SQL'e kalıcı olarak yaz!
+            _context.Games.Add(game);
+            await _context.SaveChangesAsync();
 
             return CreatedAtAction(nameof(GetById), new { id = game.Id }, game);
         }
 
         // 4. PUT: api/Game/1
         [HttpPut("{id}")]
+        [Authorize(Roles = "Admin")] // 🛡️ Sadece Admin yetkisi olan girişler oyun güncelleyebilir!
         public async Task<IActionResult> Update(int id, [FromBody] CreateGameDto updatedGameDto)
         {
             var game = await _context.Games.FirstOrDefaultAsync(g => g.Id == id);
@@ -163,12 +228,13 @@ namespace GameStoreAPI.Controllers
             game.Rating = updatedGameDto.Rating;
             game.IsInstalled = updatedGameDto.IsInstalled;
 
-            await _context.SaveChangesAsync(); // Değişiklikleri SQL'e işle
+            await _context.SaveChangesAsync();
             return Ok(game);
         }
 
         // 5. DELETE: api/Game/1
         [HttpDelete("{id}")]
+        [Authorize(Roles = "Admin")] // 🛡️ Sadece Admin yetkisi olan girişler oyun silebilir!
         public async Task<IActionResult> Delete(int id)
         {
             var game = await _context.Games.FirstOrDefaultAsync(g => g.Id == id);
@@ -178,7 +244,7 @@ namespace GameStoreAPI.Controllers
             }
 
             _context.Games.Remove(game);
-            await _context.SaveChangesAsync(); // SQL'den kalıcı olarak uçur!
+            await _context.SaveChangesAsync();
             return NoContent();
         }
     }
