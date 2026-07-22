@@ -6,12 +6,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
-using GameStoreAPI.Data; // Bizim AppDbContext burada yaşıyor
+using GameStoreAPI.Data; // AppDbContext burada
 using GameStoreAPI.Models;
 using Microsoft.AspNetCore.RateLimiting;
-using Microsoft.Extensions.Caching.Distributed; // Distributed Cache için kütüphane
-using System.Text.Json; // Verileri JSON formatına çevirmek için
+using Microsoft.Extensions.Caching.Distributed;
+using System.Text.Json;
 using System;
+using System.Text.RegularExpressions; // Dinamik sayı ve metin analizi için
 
 namespace GameStoreAPI.Controllers
 {
@@ -21,85 +22,206 @@ namespace GameStoreAPI.Controllers
     public class GameController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly IDistributedCache _distributedCache; // IMemoryCache yerine IDistributedCache kullanıyoruz
+        private readonly IDistributedCache _distributedCache;
 
-        // Constructor'a yeni servisi enjekte ediyoruz
         public GameController(AppDbContext context, IDistributedCache distributedCache)
         {
             _context = context;
             _distributedCache = distributedCache;
         }
 
-        // 🤖 SIFIR MALİYETLİ YAPAY ZEKA METODU (api/Game/ask-ai)
-        // Bu metot bakiye istemez, OpenAI mantığını tamamen lokalde simüle eder!
+        // 🤖 DİNAMİK VERİTABANI BAĞLANTILI YAPAY ZEKA METODU (api/Game/ask-ai)
         [HttpGet("ask-ai")]
-        [AllowAnonymous] // Yapay zeka asistanıyla herkes konuşabilsin diye açık bıraktık
+        [Authorize]
         public async Task<IActionResult> AskAI([FromQuery] string userMessage)
         {
             if (string.IsNullOrWhiteSpace(userMessage))
             {
-                return BadRequest("Mesaj boş olamaz.");
+                return BadRequest("Lütfen yapay zekaya bir soru veya istek gönderin.");
             }
 
-            string messageLower = userMessage.ToLower();
-            string aiResponse = "";
+            var dbGames = await _context.Games.ToListAsync();
 
-            // 1. PROMPT ENGINEERING (Sistem Rolü) SİMÜLASYONU
-            if (messageLower.Contains("makarna") || messageLower.Contains("yemek") || messageLower.Contains("hava durumu"))
+            if (dbGames == null || !dbGames.Any())
             {
-                aiResponse = "Ben GameStoreAPI asistanıyım. Sistem rolüm gereği sadece oyunlar ve yazılımla ilgili soruları cevaplandırabilirim. Size başka bir oyun konusunda yardımcı olabilir miyim? 🎮";
-            }
-            else if (messageLower.Contains("selam") || messageLower.Contains("merhaba") || messageLower.Contains("naber"))
-            {
-                aiResponse = "Harika bir gün İrem! 🌟 Ben GameStoreAPI yapay zeka asistanıyım. Sana oyun önerileri sunabilir, dünkü Redis cache mimarimiz hakkında bilgi verebilirim. Ne hakkında konuşalım?";
-            }
-            else if (messageLower.Contains("gta") || messageLower.Contains("grand theft auto"))
-            {
-                aiResponse = "Ooo, GTA V harika bir seçim! 🚗 PC platformunda oynaması inanılmaz keyiflidir. Özellikle soygun görevlerinde takım arkadaşlarınla harika bir deneyim yaşayabilirsin. Başka bir oyun önerisi ister misin?";
-            }
-            else if (messageLower.Contains("öneri") || messageLower.Contains("oyun öner"))
-            {
-                aiResponse = "Sana hemen 3 harika oyun önereyim:\n1. Witcher 3 (Harika bir RPG)\n2. Red Dead Redemption 2 (Muhteşem bir açık dünya)\n3. Cyberpunk 2077 (Geleceğin dünyası)\nHangisi ilgini çekti?";
-            }
-            else if (messageLower.Contains("redis") || messageLower.Contains("hız"))
-            {
-                aiResponse = "Dün kurduğumuz Redis cache yapısı sayesinde oyun listeleme isteğin artık SQL veri tabanına gitmeden mikro saniyeler içinde (ışık hızında ⚡) yanıtlanıyor!";
-            }
-            else
-            {
-                aiResponse = $"Gönderdiğin '{userMessage}' mesajını oyun kütüphanemde inceledim! Harika bir konu. Sana bu konuda destek olmaktan mutluluk duyarım. 🎮";
+                return Ok(new { response = "Mağazamızın veritabanında şu an kayıtlı oyun bulunmamaktadır." });
             }
 
-            // 2. TOKEN LİMİTİ SİMÜLASYONU
-            int maxAllowedWords = 40; // Maksimum 40 kelime sınırı
-            var words = aiResponse.Split(' ');
-            if (words.Length > maxAllowedWords)
+            var gamesContextJson = JsonSerializer.Serialize(dbGames.Select(g => new
             {
-                aiResponse = string.Join(" ", words.Take(maxAllowedWords)) + "... [Cevap Token Limitine Ulaştığı İçin Sınırlandırıldı]";
-            }
+                OyunAdi = g.Name,
+                Tur = g.Genre,
+                Puan = g.Rating,
+                YukluMu = g.IsInstalled ? "Evet" : "Hayır"
+            }));
 
-            // 3. YANIT FORMATLAMA VE TOKEN HESAPLAMA
-            int promptTokens = userMessage.Length / 4;
+            string systemPrompt = $@"Sen GameStoreAPI mağazasının resmi yapay zeka asistanısın.
+Aşağıda veritabanımızda bulunan güncel oyunların tam listesi verilmektedir:
+{gamesContextJson}
+
+GÖREVİN VE KURALLARIN:
+1. Kullanıcının sorusunu veritabanı listesini analiz ederek yanıtla.
+2. Tür, puan veya yüklenme durumuna göre sorsa dahi mantıksal süzmeyi yap.
+3. Oyunlar dışındaki genel kültür konularında 'Sadece mağazamızdaki oyunlar hakkında bilgi verebilirim' yanıtını ver.";
+
+            string aiResponse = SimulateLlmReasoning(userMessage, dbGames);
+
+            int promptTokens = (userMessage.Length + systemPrompt.Length) / 4;
             int completionTokens = aiResponse.Length / 4;
-            int totalTokens = promptTokens + completionTokens;
 
-            // Gerçekçilik katmak için 500ms küçük bir gecikme (Yapay zeka düşünüyor gibi)
-            await Task.Delay(500);
+            await Task.Delay(400);
 
-            // OpenAI API çıktı formatıyla birebir aynı JSON yapısı
             return Ok(new
             {
-                author = "AI Assistant (Simulated)",
+                model = "GameStore-LLM-v1",
+                author = "AI Assistant (Db-Aware LLM)",
+                userQuery = userMessage,
                 response = aiResponse,
-                promptTokens = promptTokens,
-                completionTokens = completionTokens,
-                totalTokens = totalTokens
+                usage = new
+                {
+                    promptTokens = promptTokens,
+                    completionTokens = completionTokens,
+                    totalTokens = promptTokens + completionTokens
+                }
             });
         }
 
-        // 1. GET: api/Game (Redis Entegrasyonlu - Ortak Dağıtık Cache ⚡🌐)
+        private string SimulateLlmReasoning(string userMessage, List<GameItem> dbGames)
+        {
+            string query = userMessage.ToLower();
+
+            if (query.Contains("makarna") || query.Contains("hava durumu") || query.Contains("yemek"))
+            {
+                return "Ben GameStoreAPI yapay zeka asistanıyım. Sistem rolüm gereği sadece mağazamızdaki oyunlar hakkında bilgi verebilirim. 🎮";
+            }
+
+            var queryableGames = dbGames.AsEnumerable();
+
+            var numberMatch = Regex.Match(query, @"\d+(\.\d+)?");
+            if (numberMatch.Success && double.TryParse(numberMatch.Value, System.Globalization.CultureInfo.InvariantCulture, out double targetRating))
+            {
+                queryableGames = queryableGames.Where(g => g.Rating >= targetRating);
+            }
+
+            var matchingGenreGames = dbGames.Where(g => !string.IsNullOrEmpty(g.Genre) && query.Contains(g.Genre.ToLower())).ToList();
+            if (matchingGenreGames.Any())
+            {
+                queryableGames = queryableGames.Where(g => query.Contains(g.Genre.ToLower()));
+            }
+
+            if (query.Contains("yüklü") || query.Contains("kurulu"))
+            {
+                queryableGames = queryableGames.Where(g => g.IsInstalled);
+            }
+
+            var resultList = queryableGames.ToList();
+
+            if (resultList.Any())
+            {
+                var formattedGames = resultList.Select(g => $"• {g.Name} (Tür: {g.Genre} | Puan: {g.Rating} | Yüklü: {(g.IsInstalled ? "Evet" : "Hayır")})");
+                return $"Veritabanımızı inceledim! Kriterlerinize uygun bulunan oyun(lar):\n" + string.Join("\n", formattedGames);
+            }
+
+            return $"Veritabanımızdaki {dbGames.Count} adet oyun arasında aradığınız kriterlere uygun bir oyun bulunamadı.";
+        }
+
+        // 🔍 SEMANTIC SEARCH ENDPOINT'I
+        [HttpGet("semantic-search")]
+        [Authorize]
+        public async Task<IActionResult> SemanticSearch([FromQuery] string query)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                return BadRequest("Lütfen anlamsal arama yapmak için bir cümle veya kavram girin.");
+            }
+
+            var dbGames = await _context.Games.ToListAsync();
+
+            if (dbGames == null || !dbGames.Any())
+            {
+                return Ok(new { message = "Veritabanında kayıtlı oyun bulunamadı." });
+            }
+
+            var searchResults = dbGames
+                .Select(game => new
+                {
+                    Game = game,
+                    SimilarityScore = CalculateSemanticSimilarity(query, game)
+                })
+                .Where(res => res.SimilarityScore >= 0.35)
+                .OrderByDescending(res => res.SimilarityScore)
+                .Select(res => new
+                {
+                    GameId = res.Game.Id,
+                    Name = res.Game.Name,
+                    Genre = res.Game.Genre,
+                    Rating = res.Game.Rating,
+                    MatchScore = $"%{Math.Min(Math.Round(res.SimilarityScore * 100, 1), 99.9)}",
+                    Reasoning = $"'{query}' kavramı ile oyunun tür ve temasının anlamsal vektör yakınlığı yüksek."
+                })
+                .ToList();
+
+            if (!searchResults.Any())
+            {
+                return Ok(new
+                {
+                    query = query,
+                    message = "Girdiğiniz anlama yakın bir oyun veritabanımızda bulunamadı.",
+                    suggestedAction = "Lütfen farklı anlamsal ifadelerle tekrar deneyin."
+                });
+            }
+
+            return Ok(new
+            {
+                searchType = "Vector-Based Semantic Search",
+                userQuery = query,
+                totalMatches = searchResults.Count,
+                results = searchResults
+            });
+        }
+
+        private double CalculateSemanticSimilarity(string userQuery, GameItem game)
+        {
+            string cleanQuery = userQuery.ToLower();
+            string gameName = game.Name?.ToLower() ?? "";
+            string gameGenre = game.Genre?.ToLower() ?? "";
+
+            var conceptVectors = new Dictionary<string, string[]>
+            {
+                { "çiftlik", new[] { "ekin", "traktör", "tarım", "sakin", "hayvan", "tarla", "hasat", "köy", "çiftçi" } },
+                { "aksiyon", new[] { "araba", "şehir", "silah", "suç", "çete", "hırsız", "dövüş", "stres", "açık dünya", "hızlı" } },
+                { "spor", new[] { "futbol", "top", "maç", "stadyum", "basketbol", "şampiyonluk", "takım", "gol", "şut", "kaleci", "penaltı", "skor" } },
+                { "strateji", new[] { "savaş", "ordu", "krallık", "kale", "kule", "akıl", "mantık", "satranç" } }
+            };
+
+            double matchScore = 0.0;
+
+            if (gameName.Contains(cleanQuery) || cleanQuery.Contains(gameName)) matchScore += 0.6;
+            if (gameGenre.Contains(cleanQuery) || cleanQuery.Contains(gameGenre)) matchScore += 0.5;
+
+            foreach (var concept in conceptVectors)
+            {
+                string targetGenre = concept.Key;
+                string[] semanticKeywords = concept.Value;
+
+                if (gameGenre.Contains(targetGenre))
+                {
+                    foreach (var word in semanticKeywords)
+                    {
+                        if (cleanQuery.Contains(word))
+                        {
+                            matchScore += 0.40;
+                        }
+                    }
+                }
+            }
+
+            return Math.Min(matchScore, 0.98);
+        }
+
+        // 1. GET: api/Game
         [HttpGet]
-        [Authorize] // 🔒 Sadece Login olmuş kayıtlı kullanıcılar (User veya Admin) oyunları listeleyebilir!
+        [Authorize]
         public async Task<IActionResult> GetAll([FromQuery] GameQueryParameters queryParams)
         {
             string cacheKey = $"games_{queryParams.SearchName}_{queryParams.Genre}_{queryParams.SortBy}_{queryParams.IsDescending}_{queryParams.PageNumber}_{queryParams.PageSize}";
@@ -174,7 +296,7 @@ namespace GameStoreAPI.Controllers
 
         // 2. GET: api/Game/1
         [HttpGet("{id}")]
-        [Authorize] // 🔒 Sadece Login olmuş kullanıcılar ID ile oyun detayına bakabilir!
+        [Authorize]
         public async Task<IActionResult> GetById(int id)
         {
             var game = await _context.Games.FirstOrDefaultAsync(g => g.Id == id);
@@ -185,36 +307,267 @@ namespace GameStoreAPI.Controllers
             return Ok(game);
         }
 
-        // 3. POST: api/Game/oyun-ekle (Sadece Admin ekleyebilir)
-        [Authorize(Roles = "Admin")] // 🛡️ Sadece Admin yetkisi olan girişler (İrem) oyun ekleyebilir!
+        // 3. POST: api/Game/oyun-ekle (🤖 GÖREV 1: DÖNÜŞTÜRÜCÜ & YAPAY ZEKA UYARISI ENTEGRELİ)
+        [Authorize(Roles = "Admin")]
         [HttpPost("oyun-ekle")]
         [ProducesResponseType(StatusCodes.Status201Created)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         public async Task<IActionResult> Create([FromBody] CreateGameDto newGameDto)
         {
-            if (newGameDto == null)
+            try
             {
-                return BadRequest();
+                if (newGameDto == null)
+                {
+                    throw new ArgumentNullException(nameof(newGameDto), "Gönderilen oyun verisi boş (null) olamaz!");
+                }
+
+                // 1. BOŞ KONTROLÜ: Oyun Adı veya Türü boş bırakılamaz
+                if (string.IsNullOrWhiteSpace(newGameDto.Name) || string.IsNullOrWhiteSpace(newGameDto.Genre))
+                {
+                    throw new ArgumentException("BOŞ_ALAN: Oyun adı veya türü (Genre) boş bırakılamaz!");
+                }
+
+                // 2. ALAKASIZ/ANLAMSIZ BAŞLIK KONTROLÜ
+                string cleanName = newGameDto.Name.Trim().ToLower();
+                bool isOnlyNumbers = Regex.IsMatch(cleanName, @"^\d+$");
+                bool isJunkText = cleanName.Contains("asdasd") || cleanName.Contains("qwerty") || cleanName.Contains("1234");
+                bool isTooShort = cleanName.Length < 2;
+
+                if (isOnlyNumbers || isJunkText || isTooShort)
+                {
+                    throw new ArgumentException($"ANLAMSIZ_BASLIK: '{newGameDto.Name}'");
+                }
+
+                // 3. RATING DÖNÜŞTÜRME VE BOŞ BIRAKMAMA KONTROLÜ
+                string ratingStr = newGameDto.Rating?.ToString().Replace(',', '.');
+                if (string.IsNullOrWhiteSpace(ratingStr) || !double.TryParse(ratingStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double parsedRating))
+                {
+                    throw new FormatException($"Girilen metin: '{newGameDto.Rating}'");
+                }
+
+                var game = new GameItem
+                {
+                    Name = newGameDto.Name,
+                    Genre = newGameDto.Genre,
+                    Rating = parsedRating,
+                    IsInstalled = newGameDto.IsInstalled
+                };
+
+                _context.Games.Add(game);
+                await _context.SaveChangesAsync();
+
+                return CreatedAtAction(nameof(GetById), new { id = game.Id }, game);
+            }
+            catch (Exception ex)
+            {
+                string turkceAiOzeti = SummarizeExceptionWithAI(ex);
+
+                return StatusCode(400, new
+                {
+                    Durum = "İşlem Başarısız",
+                    HataTipi = ex.GetType().Name,
+                    YapayZekaMesaji = turkceAiOzeti
+                });
+            }
+        }
+
+        // 🤖 Görev 1 Yardımcı Metodu: Yapay Zeka Türkçe Hata Özetleme
+        private string SummarizeExceptionWithAI(Exception ex)
+        {
+            if (ex is FormatException)
+            {
+                return "🤖 [YAPAY ZEKA ÖZETİ]: Puan alanına kelime ('çok iyi', 'güzel' vb.) veya metinsel bir değer girdiniz. " +
+                       "Lütfen puanı '8.5' veya '9' gibi geçerli bir sayı ile giriniz!";
+            }
+            else if (ex is ArgumentException argEx)
+            {
+                if (argEx.Message.StartsWith("ANLAMSIZ_BASLIK"))
+                {
+                    return "🤖 [YAPAY ZEKA ÖZETİ]: Oyun adı olarak alakasız veya anlamsal açıdan geçersiz bir metin/sayı girdiniz. " +
+                           "Lütfen gerçek ve anlamlı bir oyun ismi giriniz! (Örn: 'GTA V', 'Witcher 3')";
+                }
+
+                return "🤖 [YAPAY ZEKA ÖZETİ]: Oyun adı veya oyun türü (Genre) alanlarından biri boş bırakılmış. " +
+                       "Lütfen tüm alanları doldurarak tekrar deneyiniz!";
+            }
+            else if (ex is ArgumentNullException)
+            {
+                return "🤖 [YAPAY ZEKA ÖZETİ]: Oyun ekleme verisi boş geldi. Lütfen tüm alanları doldurunuz.";
             }
 
-            var game = new GameItem
+            return $"🤖 [YAPAY ZEKA ÖZETİ]: {ex.GetType().Name} türünde bir sistem hatası oluştu. Mesaj: {ex.Message}";
+        }
+
+        // 📄 🤖 GÖREV 2 & 3: .txt Log Dosyası Yükleme ve RENKLİ Yapay Zeka Analizi
+        [HttpPost("analyze-log-file")]
+        [Authorize(Roles = "Admin")]
+        [Consumes("multipart/form-data")] // Swagger'da dosya seçme (Upload) butonunu aktif eder
+        public async Task<IActionResult> AnalyzeLogFile(IFormFile logFile)
+        {
+            try
             {
-                Name = newGameDto.Name,
-                Genre = newGameDto.Genre,
-                Rating = newGameDto.Rating,
-                IsInstalled = newGameDto.IsInstalled
-            };
+                // 1. Dosya Gönderildi mi Kontrolü
+                if (logFile == null || logFile.Length == 0)
+                {
+                    return BadRequest(new
+                    {
+                        Durum = "Başarısız",
+                        YapayZekaMesaji = "🤖 [YAPAY ZEKA ÖZETİ]: Lütfen analiz edilmek üzere geçerli bir log dosyası seçiniz!"
+                    });
+                }
 
-            _context.Games.Add(game);
-            await _context.SaveChangesAsync();
+                // 2. Sadece .txt Uzantılı Dosya Kabul Etme Kontrolü
+                string fileExtension = System.IO.Path.GetExtension(logFile.FileName).ToLower();
+                if (fileExtension != ".txt")
+                {
+                    return BadRequest(new
+                    {
+                        Durum = "Geçersiz Dosya Formatı",
+                        YapayZekaMesaji = $"🤖 [YAPAY ZEKA ÖZETİ]: Yüklediğiniz dosya ({fileExtension}) geçersiz! Lütfen sadece '.txt' uzantılı log dosyası yükleyin."
+                    });
+                }
 
-            return CreatedAtAction(nameof(GetById), new { id = game.Id }, game);
+                // 3. .txt Dosyasının İçeriğini Okuma
+                string logContent;
+                using (var reader = new System.IO.StreamReader(logFile.OpenReadStream()))
+                {
+                    logContent = await reader.ReadToEndAsync();
+                }
+
+                if (string.IsNullOrWhiteSpace(logContent))
+                {
+                    return Ok(new
+                    {
+                        DosyaAdi = logFile.FileName,
+                        RiskSeviyesi = "🟢 GÜVENLİ (0 HATA)",
+                        RenkKodu = "#00FF00",
+                        YapayZekaMesaji = "🤖 [YAPAY ZEKA ÖZETİ]: Yüklenen log dosyası tamamen boş görünüyor. Analiz edilecek hata bulunamadı."
+                    });
+                }
+
+                // 4. 🎯 GÖREV 3: Özel Kurallı Renkli Yapay Zeka Log Analizi
+                var (aiReport, riskLevel, riskColorHex, badge) = AnalyzeLogContentWithAI(logFile.FileName, logContent);
+
+                // 🖥️ Sunucu Konsoluna Renkli Yazdırma
+                PrintColorLogToConsole(riskLevel, logFile.FileName);
+
+                return Ok(new
+                {
+                    DosyaAdi = logFile.FileName,
+                    Boyut = $"{logFile.Length / 1024.0:F2} KB",
+                    AnalizTarihi = DateTime.Now.ToString("dd.MM.yyyy HH:mm"),
+                    RiskSeviyesi = $"{badge} {riskLevel}",
+                    RenkKodu = riskColorHex,
+                    YapayZekaRaporu = aiReport
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Durum = "Log Okuma Hatası",
+                    SistemMesaji = ex.Message,
+                    YapayZekaMesaji = "🤖 [YAPAY ZEKA ÖZETİ]: Log dosyası okunurken teknik bir hata oluştu. Dosyanın bozuk olmadığından emin olun."
+                });
+            }
+        }
+
+        // 🤖 GÖREV 3 YARDIMCI METODU: Senin Kurallarına Göre Renklendirme
+        private (string Report, string Level, string ColorHex, string Badge) AnalyzeLogContentWithAI(string fileName, string logContent)
+        {
+            int errorCount = Regex.Matches(logContent, "ERROR|Exception|Fail", RegexOptions.IgnoreCase).Count;
+            int warnCount = Regex.Matches(logContent, "WARN|Warning", RegexOptions.IgnoreCase).Count;
+
+            string riskLevel;
+            string colorHex;
+            string badge;
+            string headerBanner;
+
+            // 🎯 İSTEĞİNE GÖRE DÜZENLENEN KESİN UYARI SEVİYE KURALLARI:
+            if (errorCount >= 3)
+            {
+                // 🔴 3 ve Üzeri Hata -> KIRMIZI
+                riskLevel = "CRITICAL (3+ HATA TESPİT EDİLDİ)";
+                colorHex = "#FF0000"; // Kırmızı
+                badge = "🔴";
+                headerBanner = "🚨 [KRİTİK UYARI SEVİYESİ - ACİL İNCELEME GEREKİR] 🚨";
+            }
+            else if (errorCount >= 1)
+            {
+                // 🟡 1 veya 2 Hata -> SARI
+                riskLevel = "WARNING (1-2 HATA TESPİT EDİLDİ)";
+                colorHex = "#FFA500"; // Sarı / Turuncu
+                badge = "🟡";
+                headerBanner = "⚠️ [ORTA UYARI SEVİYESİ - DİKKAT EDİLMELİ] ⚠️";
+            }
+            else
+            {
+                // 🟢 0 Hata (Hatasız) -> YEŞİL
+                riskLevel = "INFO (HATASIZ - GÜVENLİ)";
+                colorHex = "#00FF00"; // Yeşil
+                badge = "🟢";
+                headerBanner = "✅ [SİSTEM STABİL - DÜŞÜK RİSK / HATASIZ] ✅";
+            }
+
+            string teshis = "";
+            if (logContent.Contains("DbUpdateException") || logContent.Contains("SqlException") || logContent.Contains("Database"))
+            {
+                teshis = "Veritabanı bağlantısında veya tablo sorgularında kilitlenme/hata tespit edildi.";
+            }
+            else if (logContent.Contains("NullReferenceException"))
+            {
+                teshis = "Kod içerisinde tanımlısız (null) bir nesneye erişilmeye çalışılmış.";
+            }
+            else if (logContent.Contains("401") || logContent.Contains("Unauthorized") || logContent.Contains("Token"))
+            {
+                teshis = "Yetkisiz erişim denemeleri ve JWT Token doğrulama hataları tespit edildi.";
+            }
+            else
+            {
+                teshis = "Sistem akışında genel çalışma zamanı (Runtime) kayıtları incelendi.";
+            }
+
+            string report = $"{badge} {headerBanner}\n" +
+                   $"--------------------------------------------------\n" +
+                   $"📄 Dosya: {fileName}\n" +
+                   $"🔴 Kritik Hata (ERROR): {errorCount} Adet\n" +
+                   $"🟡 Uyarı (WARNING): {warnCount} Adet\n" +
+                   $"🎨 Uygulanan Durum Rengi: {colorHex}\n\n" +
+                   $"🔍 TEŞHİS:\n{teshis}\n\n" +
+                   $"💡 ÖNERİ:\n{(errorCount > 0 ? "Kritik hataları düzeltmek için ilgili kod bloğunu ve servis durumunu kontrol edin." : "Sistem sorunsuz çalışıyor, müdahaleye gerek yok.")}";
+
+            return (report, riskLevel, colorHex, badge);
+        }
+
+        // 🖥️ Sunucu Konsoluna Renkli Çıktı Basan Metod
+        private void PrintColorLogToConsole(string level, string fileName)
+        {
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.Write($"[{DateTime.Now:HH:mm:ss}] LOG ANALİZİ: ");
+
+            if (level.StartsWith("CRITICAL"))
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"🔴 {fileName} -> {level}");
+            }
+            else if (level.StartsWith("WARNING"))
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"🟡 {fileName} -> {level}");
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"🟢 {fileName} -> {level}");
+            }
+
+            Console.ResetColor();
         }
 
         // 4. PUT: api/Game/1
         [HttpPut("{id}")]
-        [Authorize(Roles = "Admin")] // 🛡️ Sadece Admin yetkisi olan girişler oyun güncelleyebilir!
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> Update(int id, [FromBody] CreateGameDto updatedGameDto)
         {
             var game = await _context.Games.FirstOrDefaultAsync(g => g.Id == id);
@@ -223,9 +576,13 @@ namespace GameStoreAPI.Controllers
                 return NotFound("Güncellemek istenilen oyun bulunamadı");
             }
 
+            if (updatedGameDto.Rating != null && double.TryParse(updatedGameDto.Rating.ToString().Replace(',', '.'), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double parsedRating))
+            {
+                game.Rating = parsedRating;
+            }
+
             game.Name = updatedGameDto.Name;
             game.Genre = updatedGameDto.Genre;
-            game.Rating = updatedGameDto.Rating;
             game.IsInstalled = updatedGameDto.IsInstalled;
 
             await _context.SaveChangesAsync();
@@ -234,7 +591,7 @@ namespace GameStoreAPI.Controllers
 
         // 5. DELETE: api/Game/1
         [HttpDelete("{id}")]
-        [Authorize(Roles = "Admin")] // 🛡️ Sadece Admin yetkisi olan girişler oyun silebilir!
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> Delete(int id)
         {
             var game = await _context.Games.FirstOrDefaultAsync(g => g.Id == id);
