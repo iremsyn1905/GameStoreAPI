@@ -442,11 +442,11 @@ GÖREVİN VE KURALLARIN:
                     });
                 }
 
-                // 🛡️ 1. YENİLİK: HASSAS VERİ MASKELEME UYGULANIYOR
+                // 🛡️ 1. HASSAS VERİ MASKELEME UYGULANIYOR
                 var (sanitizedLogContent, maskedCount) = MaskSensitiveData(rawLogContent);
 
-                // 🎯 2. YENİLİK: MASKELENMİŞ İÇERİKLE ANALİZ VE İSTATİSTİK ÜRETİMİ
-                var (aiReport, riskLevel, riskColorHex, badge, errorCount, warnCount) = AnalyzeLogContentWithAI(logFile.FileName, sanitizedLogContent);
+                // 🎯 2. MASKELENMİŞ İÇERİK VE MASKE SAYISI İLE ANALİZ ÜRETİMİ
+                var (aiReport, riskLevel, riskColorHex, badge, errorCount, warnCount) = AnalyzeLogContentWithAI(logFile.FileName, sanitizedLogContent, maskedCount);
 
                 stopwatch.Stop(); // ⏱️ Ölçüm sonlandı
 
@@ -455,7 +455,7 @@ GÖREVİN VE KURALLARIN:
 
                 PrintColorLogToConsole(riskLevel, logFile.FileName);
 
-                // 📊 3. YENİLİK: ZENGİNLEŞTİRİLMİŞ JSON İSTATİSTİK ÇIKTISI
+                // 📊 3. ZENGİNLEŞTİRİLMİŞ JSON İSTATİSTİK ÇIKTISI
                 return Ok(new
                 {
                     DosyaAdi = logFile.FileName,
@@ -492,7 +492,7 @@ GÖREVİN VE KURALLARIN:
             int maskedCount = 0;
 
             // Email Maskeleme
-            string emailPattern = @"[a-zA-Z0-0._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}";
+            string emailPattern = @"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}";
             maskedCount += Regex.Matches(content, emailPattern).Count;
             content = Regex.Replace(content, emailPattern, "[GİZLENDİ_EMAIL]");
 
@@ -509,8 +509,8 @@ GÖREVİN VE KURALLARIN:
             return (content, maskedCount);
         }
 
-        // 🤖 YARDIMCI METOD: Yapay Zeka Log Analizi ve Sayıcıları
-        private (string Report, string Level, string ColorHex, string Badge, int ErrorCount, int WarnCount) AnalyzeLogContentWithAI(string fileName, string logContent)
+        // 🤖 YARDIMCI METOD: Yapay Zeka Log Analizi ve Sayıcıları (maskedCount parametresi eklendi)
+        private (string Report, string Level, string ColorHex, string Badge, int ErrorCount, int WarnCount) AnalyzeLogContentWithAI(string fileName, string logContent, int maskedCount)
         {
             int errorCount = Regex.Matches(logContent, "ERROR|Exception|Fail", RegexOptions.IgnoreCase).Count;
             int warnCount = Regex.Matches(logContent, "WARN|Warning", RegexOptions.IgnoreCase).Count;
@@ -560,12 +560,18 @@ GÖREVİN VE KURALLARIN:
                 teshis = "Sistem akışında genel çalışma zamanı (Runtime) kayıtları incelendi.";
             }
 
+            // 🛡️ MASA BİLGİSİ RAPOR METNİNE eklendi
+            string maskeBilgisi = maskedCount > 0
+                ? $"🛡️ Güvenlik Katmanı: Log içindeki {maskedCount} adet hassas veri (E-posta/IP/Parola) otomatik olarak [GİZLENDİ]."
+                : "🛡️ Güvenlik Katmanı: Dosya içinde gizlenmesi gereken hassas veri tespit edilmedi.";
+
             string report = $"{badge} {headerBanner}\n" +
                    $"--------------------------------------------------\n" +
                    $"📄 Dosya: {fileName}\n" +
                    $"🔴 Kritik Hata (ERROR): {errorCount} Adet\n" +
                    $"🟡 Uyarı (WARNING): {warnCount} Adet\n" +
                    $"🎨 Uygulanan Durum Rengi: {colorHex}\n\n" +
+                   $"{maskeBilgisi}\n\n" +
                    $"🔍 TEŞHİS:\n{teshis}\n\n" +
                    $"💡 ÖNERİ:\n{(errorCount > 0 ? "Kritik hataları düzeltmek için ilgili kod bloğunu ve servis durumunu kontrol edin." : "Sistem sorunsuz çalışıyor, müdahaleye gerek yok.")}";
 
