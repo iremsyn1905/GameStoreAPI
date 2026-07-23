@@ -6,13 +6,14 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
-using GameStoreAPI.Data; // AppDbContext burada
+using GameStoreAPI.Data;
 using GameStoreAPI.Models;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Caching.Distributed;
 using System.Text.Json;
 using System;
-using System.Text.RegularExpressions; // Dinamik sayı ve metin analizi için
+using System.Diagnostics; // ⏱️ Analiz süresi ölçümü için eklendi
+using System.Text.RegularExpressions;
 
 namespace GameStoreAPI.Controllers
 {
@@ -307,7 +308,7 @@ GÖREVİN VE KURALLARIN:
             return Ok(game);
         }
 
-        // 3. POST: api/Game/oyun-ekle (🤖 GÖREV 1: DÖNÜŞTÜRÜCÜ & YAPAY ZEKA UYARISI ENTEGRELİ)
+        // 3. POST: api/Game/oyun-ekle
         [Authorize(Roles = "Admin")]
         [HttpPost("oyun-ekle")]
         [ProducesResponseType(StatusCodes.Status201Created)]
@@ -322,13 +323,11 @@ GÖREVİN VE KURALLARIN:
                     throw new ArgumentNullException(nameof(newGameDto), "Gönderilen oyun verisi boş (null) olamaz!");
                 }
 
-                // 1. BOŞ KONTROLÜ: Oyun Adı veya Türü boş bırakılamaz
                 if (string.IsNullOrWhiteSpace(newGameDto.Name) || string.IsNullOrWhiteSpace(newGameDto.Genre))
                 {
                     throw new ArgumentException("BOŞ_ALAN: Oyun adı veya türü (Genre) boş bırakılamaz!");
                 }
 
-                // 2. ALAKASIZ/ANLAMSIZ BAŞLIK KONTROLÜ
                 string cleanName = newGameDto.Name.Trim().ToLower();
                 bool isOnlyNumbers = Regex.IsMatch(cleanName, @"^\d+$");
                 bool isJunkText = cleanName.Contains("asdasd") || cleanName.Contains("qwerty") || cleanName.Contains("1234");
@@ -339,7 +338,6 @@ GÖREVİN VE KURALLARIN:
                     throw new ArgumentException($"ANLAMSIZ_BASLIK: '{newGameDto.Name}'");
                 }
 
-                // 3. RATING DÖNÜŞTÜRME VE BOŞ BIRAKMAMA KONTROLÜ
                 string ratingStr = newGameDto.Rating?.ToString().Replace(',', '.');
                 if (string.IsNullOrWhiteSpace(ratingStr) || !double.TryParse(ratingStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double parsedRating))
                 {
@@ -372,7 +370,6 @@ GÖREVİN VE KURALLARIN:
             }
         }
 
-        // 🤖 Görev 1 Yardımcı Metodu: Yapay Zeka Türkçe Hata Özetleme
         private string SummarizeExceptionWithAI(Exception ex)
         {
             if (ex is FormatException)
@@ -399,15 +396,16 @@ GÖREVİN VE KURALLARIN:
             return $"🤖 [YAPAY ZEKA ÖZETİ]: {ex.GetType().Name} türünde bir sistem hatası oluştu. Mesaj: {ex.Message}";
         }
 
-        // 📄 🤖 GÖREV 2 & 3: .txt Log Dosyası Yükleme ve RENKLİ Yapay Zeka Analizi
+        // 📄 🤖 GÖREV 2 & 3: .txt Log Dosyası Yükleme, MASKELENMİŞ ve İSTATİSTİKLİ Yapay Zeka Analizi
         [HttpPost("analyze-log-file")]
         [Authorize(Roles = "Admin")]
-        [Consumes("multipart/form-data")] // Swagger'da dosya seçme (Upload) butonunu aktif eder
+        [Consumes("multipart/form-data")]
         public async Task<IActionResult> AnalyzeLogFile(IFormFile logFile)
         {
+            var stopwatch = Stopwatch.StartNew(); // ⏱️ Analiz süresini ölçmek için başlatıldı
+
             try
             {
-                // 1. Dosya Gönderildi mi Kontrolü
                 if (logFile == null || logFile.Length == 0)
                 {
                     return BadRequest(new
@@ -417,7 +415,6 @@ GÖREVİN VE KURALLARIN:
                     });
                 }
 
-                // 2. Sadece .txt Uzantılı Dosya Kabul Etme Kontrolü
                 string fileExtension = System.IO.Path.GetExtension(logFile.FileName).ToLower();
                 if (fileExtension != ".txt")
                 {
@@ -428,14 +425,13 @@ GÖREVİN VE KURALLARIN:
                     });
                 }
 
-                // 3. .txt Dosyasının İçeriğini Okuma
-                string logContent;
+                string rawLogContent;
                 using (var reader = new System.IO.StreamReader(logFile.OpenReadStream()))
                 {
-                    logContent = await reader.ReadToEndAsync();
+                    rawLogContent = await reader.ReadToEndAsync();
                 }
 
-                if (string.IsNullOrWhiteSpace(logContent))
+                if (string.IsNullOrWhiteSpace(rawLogContent))
                 {
                     return Ok(new
                     {
@@ -446,19 +442,36 @@ GÖREVİN VE KURALLARIN:
                     });
                 }
 
-                // 4. 🎯 GÖREV 3: Özel Kurallı Renkli Yapay Zeka Log Analizi
-                var (aiReport, riskLevel, riskColorHex, badge) = AnalyzeLogContentWithAI(logFile.FileName, logContent);
+                // 🛡️ 1. YENİLİK: HASSAS VERİ MASKELEME UYGULANIYOR
+                var (sanitizedLogContent, maskedCount) = MaskSensitiveData(rawLogContent);
 
-                // 🖥️ Sunucu Konsoluna Renkli Yazdırma
+                // 🎯 2. YENİLİK: MASKELENMİŞ İÇERİKLE ANALİZ VE İSTATİSTİK ÜRETİMİ
+                var (aiReport, riskLevel, riskColorHex, badge, errorCount, warnCount) = AnalyzeLogContentWithAI(logFile.FileName, sanitizedLogContent);
+
+                stopwatch.Stop(); // ⏱️ Ölçüm sonlandı
+
+                int lineCount = rawLogContent.Split('\n').Length;
+                int estimatedTokens = (sanitizedLogContent.Length + aiReport.Length) / 4;
+
                 PrintColorLogToConsole(riskLevel, logFile.FileName);
 
+                // 📊 3. YENİLİK: ZENGİNLEŞTİRİLMİŞ JSON İSTATİSTİK ÇIKTISI
                 return Ok(new
                 {
                     DosyaAdi = logFile.FileName,
                     Boyut = $"{logFile.Length / 1024.0:F2} KB",
-                    AnalizTarihi = DateTime.Now.ToString("dd.MM.yyyy HH:mm"),
+                    AnalizTarihi = DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss"),
                     RiskSeviyesi = $"{badge} {riskLevel}",
                     RenkKodu = riskColorHex,
+                    Istatistikler = new
+                    {
+                        ToplamSatirSayisi = lineCount,
+                        KritikHataSayisi = errorCount,
+                        UyariSayisi = warnCount,
+                        MaskelenenHassasVeriSayisi = maskedCount,
+                        AnalizSuresiMilisaniye = stopwatch.ElapsedMilliseconds,
+                        TahminiHarcananLlmToken = estimatedTokens
+                    },
                     YapayZekaRaporu = aiReport
                 });
             }
@@ -473,8 +486,31 @@ GÖREVİN VE KURALLARIN:
             }
         }
 
-        // 🤖 GÖREV 3 YARDIMCI METODU: Senin Kurallarına Göre Renklendirme
-        private (string Report, string Level, string ColorHex, string Badge) AnalyzeLogContentWithAI(string fileName, string logContent)
+        // 🛡️ YARDIMCI METOD: Hassas Veri Maskeleme Metodu (Anonymization)
+        private (string SanitizedContent, int MaskedCount) MaskSensitiveData(string content)
+        {
+            int maskedCount = 0;
+
+            // Email Maskeleme
+            string emailPattern = @"[a-zA-Z0-0._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}";
+            maskedCount += Regex.Matches(content, emailPattern).Count;
+            content = Regex.Replace(content, emailPattern, "[GİZLENDİ_EMAIL]");
+
+            // IPv4 Maskeleme
+            string ipPattern = @"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b";
+            maskedCount += Regex.Matches(content, ipPattern).Count;
+            content = Regex.Replace(content, ipPattern, "[GİZLENDİ_IP]");
+
+            // Parola / Token Maskeleme
+            string secretPattern = @"(?i)(password|pass|token|secret)\s*[:=]\s*([^\s;]+)";
+            maskedCount += Regex.Matches(content, secretPattern).Count;
+            content = Regex.Replace(content, secretPattern, "$1=[GİZLENDİ_VERİ]");
+
+            return (content, maskedCount);
+        }
+
+        // 🤖 YARDIMCI METOD: Yapay Zeka Log Analizi ve Sayıcıları
+        private (string Report, string Level, string ColorHex, string Badge, int ErrorCount, int WarnCount) AnalyzeLogContentWithAI(string fileName, string logContent)
         {
             int errorCount = Regex.Matches(logContent, "ERROR|Exception|Fail", RegexOptions.IgnoreCase).Count;
             int warnCount = Regex.Matches(logContent, "WARN|Warning", RegexOptions.IgnoreCase).Count;
@@ -484,28 +520,24 @@ GÖREVİN VE KURALLARIN:
             string badge;
             string headerBanner;
 
-            // 🎯 İSTEĞİNE GÖRE DÜZENLENEN KESİN UYARI SEVİYE KURALLARI:
             if (errorCount >= 3)
             {
-                // 🔴 3 ve Üzeri Hata -> KIRMIZI
                 riskLevel = "CRITICAL (3+ HATA TESPİT EDİLDİ)";
-                colorHex = "#FF0000"; // Kırmızı
+                colorHex = "#FF0000";
                 badge = "🔴";
                 headerBanner = "🚨 [KRİTİK UYARI SEVİYESİ - ACİL İNCELEME GEREKİR] 🚨";
             }
             else if (errorCount >= 1)
             {
-                // 🟡 1 veya 2 Hata -> SARI
                 riskLevel = "WARNING (1-2 HATA TESPİT EDİLDİ)";
-                colorHex = "#FFA500"; // Sarı / Turuncu
+                colorHex = "#FFA500";
                 badge = "🟡";
                 headerBanner = "⚠️ [ORTA UYARI SEVİYESİ - DİKKAT EDİLMELİ] ⚠️";
             }
             else
             {
-                // 🟢 0 Hata (Hatasız) -> YEŞİL
                 riskLevel = "INFO (HATASIZ - GÜVENLİ)";
-                colorHex = "#00FF00"; // Yeşil
+                colorHex = "#00FF00";
                 badge = "🟢";
                 headerBanner = "✅ [SİSTEM STABİL - DÜŞÜK RİSK / HATASIZ] ✅";
             }
@@ -537,10 +569,9 @@ GÖREVİN VE KURALLARIN:
                    $"🔍 TEŞHİS:\n{teshis}\n\n" +
                    $"💡 ÖNERİ:\n{(errorCount > 0 ? "Kritik hataları düzeltmek için ilgili kod bloğunu ve servis durumunu kontrol edin." : "Sistem sorunsuz çalışıyor, müdahaleye gerek yok.")}";
 
-            return (report, riskLevel, colorHex, badge);
+            return (report, riskLevel, colorHex, badge, errorCount, warnCount);
         }
 
-        // 🖥️ Sunucu Konsoluna Renkli Çıktı Basan Metod
         private void PrintColorLogToConsole(string level, string fileName)
         {
             Console.ForegroundColor = ConsoleColor.Cyan;
